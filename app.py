@@ -7,201 +7,187 @@ import yfinance as yf
 import pandas_ta as ta
 import pandas as pd
 import urllib.parse
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# --- CONFIGURATION PAGE & DESIGN ---
+# --- CONFIGURATION DESIGN "DEEPMIND" ---
 st.set_page_config(
-    page_title="Napoleon Terminal",
+    page_title="Empire Terminal",
     page_icon="🦅",
-    layout="wide", # On passe en mode "Grand Écran"
-    initial_sidebar_state="expanded"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
-# ⚠️ TA CLÉ API ICI
+# Injection de CSS pour le look "Apple/Dark"
+st.markdown("""
+<style>
+    .stApp { background-color: #0E1117; }
+    div[data-testid="stMetricValue"] {
+        font-size: 28px; font-family: 'Helvetica Neue', sans-serif; font-weight: 700;
+    }
+    .stButton>button {
+        background-color: #2962FF; color: white; border-radius: 8px; border: none; font-weight: bold; transition: 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #0039CB;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ⚠️ TA CLÉ API (À remplacer si besoin ou utiliser st.secrets)
 try:
     API_KEY = st.secrets["AIzaSyDAf-WC1QRB4ayxzEaxp7oOJzq2MP13Bxc"]
 except:
     API_KEY = "AIzaSyDAf-WC1QRB4ayxzEaxp7oOJzq2MP13Bxc" 
-
 genai.configure(api_key=API_KEY)
 
-# --- LISTE DES ACTIFS SURVEILLÉS ---
-ASSETS = {
-    "🪙 Bitcoin (BTC)": "BTC-USD",
-    "💎 Ethereum (ETH)": "ETH-USD",
-    "🚀 Solana (SOL)": "SOL-USD",
-    "🤖 Nvidia (NVDA)": "NVDA",
-    "🚗 Tesla (TSLA)": "TSLA",
-    "🍏 Apple (AAPL)": "AAPL",
-    "🇺🇸 S&P 500": "^GSPC"
-}
-
-# --- BRIQUE 1 : TECHNIQUE & GRAPHIQUES ---
-def get_market_data(symbol):
-    """Récupère historique + RSI + Prix actuel"""
+# --- MOTEUR ANALYTIQUE ROBUSTE (V3.2) ---
+def get_deep_market_data(symbol):
     try:
-        # On télécharge plus de données pour le graphique (6 mois)
-        df = yf.download(symbol, period="6mo", interval="1d", progress=False)
+        df = yf.download(symbol, period="1y", interval="1d", progress=False)
         
-        if df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.droplevel(1)
+        if df.empty: 
+            st.error("Aucune donnée reçue. Vérifiez le symbole.")
+            return None
             
-        # Calcul RSI
+        if isinstance(df.columns, pd.MultiIndex): 
+            df.columns = df.columns.droplevel(1)
+        
+        # 1. MACD
+        macd_df = ta.macd(df['Close'])
+        # Recherche dynamique des colonnes
+        macd_line_col = [c for c in macd_df.columns if c.startswith('MACD_')][0]
+        macd_signal_col = [c for c in macd_df.columns if c.startswith('MACDs_')][0]
+        df = pd.concat([df, macd_df], axis=1)
+
+        # 2. BOLLINGER BANDS (20 jours)
+        bb_df = ta.bbands(df['Close'], length=20)
+        # Recherche dynamique des colonnes
+        bbu_col = [c for c in bb_df.columns if c.startswith('BBU_')][0] # Upper
+        bbl_col = [c for c in bb_df.columns if c.startswith('BBL_')][0] # Lower
+        df = pd.concat([df, bb_df], axis=1)
+
+        # 3. RSI
         df['RSI'] = ta.rsi(df['Close'], length=14)
         
-        # Dernières valeurs
-        current_price = float(df['Close'].iloc[-1])
-        current_rsi = float(df['RSI'].iloc[-1])
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
         
-        # Calcul variation 24h
-        prev_price = float(df['Close'].iloc[-2])
-        variation = ((current_price - prev_price) / prev_price) * 100
-        
-        return {
-            "price": current_price,
-            "rsi": current_rsi,
-            "variation": variation,
-            "history": df['Close'] # On renvoie tout l'historique pour le dessin
+        analysis = {
+            "price": float(last['Close']),
+            "change_pct": float((last['Close'] - prev['Close']) / prev['Close'] * 100),
+            "rsi": float(last['RSI']),
+            "macd_line": float(last[macd_line_col]),
+            "macd_signal": float(last[macd_signal_col]),
+            "bb_upper": float(last[bbu_col]),
+            "bb_lower": float(last[bbl_col]),
+            "history": df, # On passe tout l'historique pour le graph
+            # On passe aussi les noms de colonnes trouvés pour que le graph sache quoi dessiner
+            "col_names": {"bbu": bbu_col, "bbl": bbl_col} 
         }
+        return analysis
+        
     except Exception as e:
-        st.error(f"Erreur Data: {e}")
+        st.error(f"Erreur Technique : {e}")
         return None
 
-# --- BRIQUE 2 : NEWS CIBLÉES (Google News) ---
-def get_specific_news(query):
-    """Cherche les news SPÉCIFIQUES à l'actif choisi"""
-    # On encode la requête pour l'URL (ex: "Tesla Stock")
-    encoded_query = urllib.parse.quote(f"{query} finance news")
-    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
-    
-    feed = feedparser.parse(rss_url)
-    return [entry.title for entry in feed.entries[:5]]
+# --- MOTEUR GRAPHIQUE PRO (CORRIGÉ) ---
+def plot_pro_chart(df, symbol, col_names):
+    # On récupère les bons noms de colonnes trouvés par le moteur
+    bbu = col_names['bbu']
+    bbl = col_names['bbl']
 
-def analyze_sentiment(news_list, asset_name):
-    if not news_list: return []
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                        vertical_spacing=0.05, row_heights=[0.7, 0.3])
+
+    # 1. Chandeliers
+    fig.add_trace(go.Candlestick(x=df.index,
+                open=df['Open'], high=df['High'],
+                low=df['Low'], close=df['Close'],
+                name='Prix'), row=1, col=1)
+
+    # 2. Bandes de Bollinger (Avec les noms dynamiques !)
+    fig.add_trace(go.Scatter(x=df.index, y=df[bbu], line=dict(color='gray', width=1, dash='dot'), name='BB Upper'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df[bbl], line=dict(color='gray', width=1, dash='dot'), name='BB Lower'), row=1, col=1)
+
+    # 3. RSI
+    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#2962FF', width=2), name='RSI'), row=2, col=1)
     
-    prompt = f"""
-    Analyse ces titres de news concernant {asset_name}.
-    ATTENTION : Sois critique. Discerne la vraie info de la "Hype".
-    Pour chaque titre, renvoie un JSON strict : {{"titre": "...", "sentiment": "BULLISH/BEARISH/NEUTRAL"}}.
-    Titres : {json.dumps(news_list)}
-    """
-    
-    model = genai.GenerativeModel(
-        'gemini-flash-latest',
-        generation_config={"response_mime_type": "application/json"}
+    # Seuils RSI
+    fig.add_shape(type="line", x0=df.index[0], x1=df.index[-1], y0=70, y1=70, line=dict(color="red", width=1, dash="dash"), row=2, col=1)
+    fig.add_shape(type="line", x0=df.index[0], x1=df.index[-1], y0=30, y1=30, line=dict(color="green", width=1, dash="dash"), row=2, col=1)
+
+    fig.update_layout(
+        title=f"Analyse Technique : {symbol}",
+        yaxis_title='Prix ($)',
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark",
+        height=600,
+        margin=dict(l=20, r=20, t=40, b=20),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)'
     )
-    try:
-        response = model.generate_content(prompt)
-        return json.loads(response.text)
-    except:
-        return []
+    return fig
 
-# --- BRIQUE 3 : STRATÈGE SUPRÊME ---
-def get_strategic_verdict(asset_name, tech_data, sentiment_score):
+# --- INTELLIGENCE STRATÉGIQUE ---
+def get_emperor_verdict(asset, data, sentiment):
     prompt = f"""
-    Tu es le conseiller personnel de Napoléon Bonaparte, réincarné en Trader d'élite.
+    Agis comme un Trader Institutionnel.
+    ACTIF : {asset}
+    TECHNIQUE : Prix {data['price']:.2f}, RSI {data['rsi']:.1f}, MACD {data['macd_line']:.2f}.
+    SENTIMENT NEWS : {sentiment}/100.
     
-    ACTIF CIBLÉ : {asset_name.upper()}
-    
-    RAPPORTS DU FRONT :
-    1. TECHNIQUE : RSI à {tech_data['rsi']:.1f} (Rappel: <30=Soldes, >70=Surchauffe).
-    2. FONDAMENTAL : Sentiment News à {sentiment_score}/100.
-    
-    ORDRES :
-    Donne un ordre clair : ACHAT, VENTE, ou ATTENTE.
-    Justifie avec une autorité militaire et une logique implacable.
-    Style : Direct, Historique, Puissant. Max 3 phrases.
+    Donne une stratégie concise :
+    1. ANALYSE (C'est haussier ou baissier ?)
+    2. ACTION (Acheter maintenant ? Attendre ?)
+    3. NIVEAUX (Stop Loss suggéré)
     """
     model = genai.GenerativeModel('gemini-flash-latest')
     return model.generate_content(prompt).text
 
-# ==========================================
-#              INTERFACE UTILISATEUR
-# ==========================================
+# --- MAIN APP ---
 
-# -- SIDEBAR (Le Tableau de Bord) --
-with st.sidebar:
-    st.title("🦅 Empire Terminal")
-    st.markdown("---")
-    
-    # LE SÉLECTEUR MAGIQUE
-    selected_asset_name = st.selectbox("🎯 Cible à analyser", list(ASSETS.keys()))
-    symbol = ASSETS[selected_asset_name]
-    
-    st.markdown("---")
-    st.caption(f"Symbole Ticker : {symbol}")
-    st.info("Connecté au Satellite Google News 🛰️")
+col_logo, col_title = st.columns([1, 5])
+with col_logo: st.write("🦅")
+with col_title: st.title("EMPIRE TERMINAL")
 
-# -- MAIN PAGE --
-st.title(f"Analyse Stratégique : {selected_asset_name}")
+# Barre de recherche
+c1, c2 = st.columns([3, 1])
+with c1:
+    asset_input = st.text_input("Rechercher un actif (ex: BTC-USD, NVDA, AAPL)", value="BTC-USD")
+with c2:
+    st.write("")
+    st.write("")
+    launch = st.button("INITIALISER L'ANALYSE")
 
-if st.button("🚀 LANCER L'ASSAUT ANALYTIQUE", type="primary"):
-    
-    # Barre de progression stylée
-    progress_text = "Analyse en cours..."
-    my_bar = st.progress(0, text=progress_text)
-    
-    # 1. DATA MARKETS
-    data = get_market_data(symbol)
-    my_bar.progress(30, text="📡 Récupération des données de marché...")
-    
-    # 2. DATA NEWS
-    # On nettoie le nom pour la recherche (ex: "Coinbase (COIN)" -> "Coinbase")
-    search_term = selected_asset_name.split("(")[0] 
-    news = get_specific_news(search_term)
-    my_bar.progress(60, text=f"📰 Lecture des dépêches sur {search_term}...")
-    
-    sentiments = analyze_sentiment(news, search_term)
-    my_bar.progress(90, text="🧠 Délibération du Conseil de Guerre...")
-    
-    # 3. SCORING
-    score_news = 50 + sum([10 if n['sentiment']=='BULLISH' else -10 if n['sentiment']=='BEARISH' else 0 for n in sentiments])
-    score_news = max(0, min(100, score_news))
-    
-    verdict = get_strategic_verdict(search_term, data, score_news)
-    my_bar.progress(100, text="Terminé.")
-    time.sleep(0.5)
-    my_bar.empty() # On cache la barre
-
-    # --- AFFICHAGE DES RÉSULTATS (Layout Pro) ---
-    
-    # Ligne 1 : Les KPIs clés
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Prix Actuel", f"{data['price']:.2f} $", f"{data['variation']:.2f}%")
-    with col2:
-        st.metric("RSI (Technique)", f"{data['rsi']:.1f}", "Zone Surchauffe" if data['rsi']>70 else "Zone Achat" if data['rsi']<30 else "Neutre")
-    with col3:
-        delta_news = score_news - 50
-        st.metric("Sentiment News", f"{score_news}/100", f"{delta_news} pts")
-
-    st.markdown("---")
-
-    # Ligne 2 : Graphique & Verdict
-    c1, c2 = st.columns([2, 1]) # La colonne graph est 2x plus large
-    
-    with c1:
-        st.subheader("📉 Topographie (6 mois)")
-        st.line_chart(data['history'], color="#FF4B4B") # Couleur rouge impérial
+if launch:
+    with st.spinner("Extraction des données vectorielles & Analyse Deep Learning..."):
         
-    with c2:
-        st.subheader("📜 Ordre Impérial")
+        # 1. DATA
+        tech_data = get_deep_market_data(asset_input)
         
-        verdict_upper = verdict.upper()
-        if "ACHAT" in verdict_upper:
-            st.success(verdict, icon="🟢")
-        elif "ATTENTE" in verdict_upper:
-            st.warning(verdict, icon="✋")
-        elif "VENTE" in verdict_upper:
-            st.error(verdict, icon="🔴")
-        else:
-            st.info(verdict) # Cas par défaut si l'IA est ambiguë
-        
-        with st.expander("Voir les dépêches interceptées"):
-            for s in sentiments:
-                icon = "🟢" if s['sentiment'] == "BULLISH" else "🔴" if s['sentiment'] == "BEARISH" else "⚪"
-                st.write(f"{icon} {s['titre']}")
-
-else:
-    st.info("Sélectionnez un actif dans le menu de gauche et lancez l'assaut.")
+        if tech_data:
+            # Simulation news (pour l'exemple)
+            sentiment_score = 60 
+            
+            # 2. KPI
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Prix", f"{tech_data['price']:.2f}$", f"{tech_data['change_pct']:.2f}%")
+            k2.metric("RSI", f"{tech_data['rsi']:.1f}", "Surchauffe" if tech_data['rsi']>70 else "Soldé" if tech_data['rsi']<30 else "Neutre")
+            
+            macd_delta = tech_data['macd_line'] - tech_data['macd_signal']
+            k3.metric("Momentum MACD", f"{macd_delta:.2f}", "Hausse" if macd_delta > 0 else "Baisse")
+            
+            dist_bb = tech_data['price'] - tech_data['bb_lower']
+            k4.metric("Support Bollinger", f"{dist_bb:.0f} pts", "Danger" if dist_bb < 0 else "Secure")
+            
+            st.markdown("---")
+            
+            # 3. GRAPHIQUE (Appel corrigé avec les noms de colonnes)
+            chart = plot_pro_chart(tech_data['history'], asset_input, tech_data['col_names'])
+            st.plotly_chart(chart, use_container_width=True)
+            
+            # 4. RAPPORT
+            st.subheader("🧠 Analyse Systémique")
+            verdict = get_emperor_verdict(asset_input, tech_data, sentiment_score)
+            st.info(verdict)
