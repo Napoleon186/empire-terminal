@@ -6,6 +6,7 @@ import time
 import yfinance as yf
 import pandas_ta as ta
 import pandas as pd
+import plotly
 import urllib.parse
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -190,4 +191,5 @@ if launch:
             # 4. RAPPORT
             st.subheader("🧠 Analyse Systémique")
             verdict = get_emperor_verdict(asset_input, tech_data, sentiment_score)
+
             st.info(verdict)
