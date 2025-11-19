@@ -1,0 +1,6 @@
+streamlit
+google-generativeai
+feedparser
+yfinance
+pandas_ta
+pandas
