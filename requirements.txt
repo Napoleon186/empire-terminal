@@ -4,3 +4,4 @@ feedparser
 yfinance
 pandas_ta
 pandas
+plotly
